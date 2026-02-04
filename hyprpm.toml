@@ -1,0 +1,15 @@
+[repository]
+name = "HyprTaliaMisc"
+authors = ["Talia-12"]
+commit_pins = [
+    # v Hyprland                                  v HyprTaliaMisc
+    ["dd220efe7b1e292415bd0ea7161f63df9c95bfd3", "491ed5112850f4c298fbb11e21d9bc94677876ee"], # v0.53.3
+]
+
+[Hypr-DarkWindow]
+description = "My misc. Hyprland additions"
+authors = ["Talia-12"]
+output = "out/hyprtaliamisc.so"
+build = [
+    "make all -j",
+]

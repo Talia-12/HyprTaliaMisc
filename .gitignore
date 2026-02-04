@@ -1,0 +1,6 @@
+hyprland/
+out/
+.vscode/
+.helix/
+.envrc
+.direnv
