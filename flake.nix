@@ -1,37 +1,29 @@
 {
   inputs = {
-    # hyprland.url = "git+https://github.com/hyprwm/Hyprland?submodules=1&ref=v0.53.3";
-    hyprland = {
-      type = "git";
-      url = "https://github.com/hyprwm/Hyprland";
-      submodules = true;
-      ref = "refs/tags/v0.53.3";
-    };
-
-
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     nix-filter.url = "github:numtide/nix-filter";
   };
 
   outputs =
     {
       self,
-      hyprland,
+      nixpkgs,
       nix-filter,
       ...
     }:
     let
-      inherit (hyprland.inputs) nixpkgs;
-      forHyprlandSystems =
+      supportedSystems = [ "x86_64-linux" "aarch64-linux" ];
+      forAllSystems =
         fn:
-        nixpkgs.lib.genAttrs (builtins.attrNames hyprland.packages) (
+        nixpkgs.lib.genAttrs supportedSystems (
           system: fn system nixpkgs.legacyPackages.${system}
         );
     in
     {
-      packages = forHyprlandSystems (
+      packages = forAllSystems (
         system: pkgs:
         let
-          hyprlandPackage = hyprland.packages.${system}.hyprland;
+          hyprlandPackage = pkgs.hyprland;
         in
         rec {
           HyprTaliaMisc = pkgs.gcc14Stdenv.mkDerivation {
@@ -65,7 +57,7 @@
         }
       );
 
-      devShells = forHyprlandSystems (
+      devShells = forAllSystems (
         system: pkgs: {
           default = pkgs.mkShell {
             name = "HyprTaliaMisc";
