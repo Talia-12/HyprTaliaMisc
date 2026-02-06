@@ -86,6 +86,48 @@ static SDispatchResult dwindleSwapDirection(std::string args) {
     return {};
 }
 
+static SDispatchResult cycleFloating(std::string args) {
+    char dir = parseDirection(args);
+    if (!dir)
+        return {.success = false, .error = "Invalid direction: " + args};
+
+    bool increasing = (dir == 'r' || dir == 'd');
+
+    // Collect visible floating windows
+    std::vector<PHLWINDOW> floating;
+    for (const auto& w : g_pCompositor->m_windows) {
+        if (w->m_isFloating && w->m_isMapped && !w->isHidden() &&
+            w->m_workspace && w->m_workspace->isVisible())
+            floating.push_back(w);
+    }
+
+    if (floating.empty()) {
+        notifyError(PHANDLE, "No visible floating windows");
+        return {};
+    }
+
+    // Find the target window to focus
+    PHLWINDOW target;
+    auto      active = Desktop::focusState()->window();
+    auto      it     = std::find(floating.begin(), floating.end(), active);
+
+    if (it != floating.end()) {
+        // Active window is floating — cycle from its position
+        size_t i = it - floating.begin();
+        size_t n = floating.size();
+        target = floating[increasing ? (i + 1) % n : (i + n - 1) % n];
+    } else {
+        // Active window is not floating — enter the list from the appropriate end
+        target = increasing ? floating.front() : floating.back();
+    }
+
+    g_pInputManager->unconstrainMouse();
+    Desktop::focusState()->fullWindowFocus(target);
+    target->warpCursor();
+
+    return {};
+}
+
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle)
 {
     PHANDLE = handle;
@@ -112,6 +154,10 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle)
 
     HyprlandAPI::addDispatcherV2(PHANDLE, "taliamisc:dwindleswap", [](std::string args) {
         return dwindleSwapDirection(args);
+    });
+
+    HyprlandAPI::addDispatcherV2(PHANDLE, "taliamisc:cyclefloating", [](std::string args) {
+        return cycleFloating(args);
     });
 
     return {
