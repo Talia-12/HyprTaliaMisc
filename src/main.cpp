@@ -128,6 +128,40 @@ static SDispatchResult cycleFloating(std::string args) {
     return {};
 }
 
+static SDispatchResult toggleFloatingFocus(std::string) {
+    auto active = Desktop::focusState()->window();
+    if (!active)
+        return {};
+
+    PHLWINDOW target;
+
+    if (active->m_isFloating) {
+        // Focus the tiled window beneath the centre of this floating window
+        auto center = active->getWindowMainSurfaceBox().middle();
+        target = g_pCompositor->vectorToWindowUnified(center, Desktop::View::WINDOW_ONLY, active);
+    } else {
+        // Focus the first visible floating window that overlaps this tiled window
+        auto activeBox = active->getWindowMainSurfaceBox();
+        for (const auto& w : g_pCompositor->m_windows) {
+            if (w->m_isFloating && w->m_isMapped && !w->isHidden() &&
+                w->m_workspace && w->m_workspace->isVisible() &&
+                w->getWindowMainSurfaceBox().overlaps(activeBox)) {
+                target = w;
+                break;
+            }
+        }
+    }
+
+    if (!target)
+        return {};
+
+    g_pInputManager->unconstrainMouse();
+    Desktop::focusState()->fullWindowFocus(target);
+    target->warpCursor();
+
+    return {};
+}
+
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle)
 {
     PHANDLE = handle;
@@ -158,6 +192,10 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle)
 
     HyprlandAPI::addDispatcherV2(PHANDLE, "taliamisc:cyclefloating", [](std::string args) {
         return cycleFloating(args);
+    });
+
+    HyprlandAPI::addDispatcherV2(PHANDLE, "taliamisc:togglefloatingfocus", [](std::string args) {
+        return toggleFloatingFocus(args);
     });
 
     return {
