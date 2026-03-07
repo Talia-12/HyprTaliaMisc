@@ -2,31 +2,57 @@
 #include <hyprland/src/config/ConfigManager.hpp>
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
-
-// Include IHyprLayout and DesktopTypes normally first so their transitive
-// standard library includes aren't affected by the private→public hack.
-#include <hyprland/src/layout/IHyprLayout.hpp>
 #include <hyprland/src/desktop/DesktopTypes.hpp>
+#include <hyprland/src/helpers/math/Direction.hpp>
+
+// Include the algorithm headers normally first so their transitive
+// standard library includes aren't affected by the private→public hack.
+#include <hyprland/src/layout/algorithm/TiledAlgorithm.hpp>
 
 #define private public
-#include <hyprland/src/layout/DwindleLayout.hpp>
+#include <hyprland/src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.hpp>
 #undef private
 
-#include <hyprland/src/managers/LayoutManager.hpp>
+#include <hyprland/src/layout/LayoutManager.hpp>
+#include <hyprland/src/layout/space/Space.hpp>
+#include <hyprland/src/layout/algorithm/Algorithm.hpp>
+
+// SDwindleNodeData is defined only in DwindleAlgorithm.cpp, so we must
+// duplicate the struct definition here to access the tree structure.
+// This is inherently fragile — update when Hyprland changes.
+namespace Layout::Tiled {
+    struct SDwindleNodeData {
+        WP<SDwindleNodeData>                pParent;
+        bool                                isNode = false;
+        WP<Layout::ITarget>                 pTarget;
+        std::array<WP<SDwindleNodeData>, 2> children = {};
+        WP<SDwindleNodeData>                self;
+        bool                                splitTop               = false;
+        CBox                                box                    = {0};
+        float                               splitRatio             = 1.f;
+        bool                                valid                  = true;
+        bool                                ignoreFullscreenChecks = false;
+
+        bool operator==(const SDwindleNodeData& rhs) const {
+            return pTarget.lock() == rhs.pTarget.lock() && box == rhs.box && pParent == rhs.pParent && children[0] == rhs.children[0] && children[1] == rhs.children[1];
+        }
+
+    };
+}
 
 #include "Helpers.h"
 
 inline HANDLE PHANDLE = nullptr;
 
-static char parseDirection(const std::string& arg) {
-    if (arg == "l" || arg == "left")  return 'l';
-    if (arg == "r" || arg == "right") return 'r';
-    if (arg == "u" || arg == "up")    return 'u';
-    if (arg == "d" || arg == "down")  return 'd';
-    return 0;
+static Math::eDirection parseDirection(const std::string& arg) {
+    if (arg == "l" || arg == "left")  return Math::DIRECTION_LEFT;
+    if (arg == "r" || arg == "right") return Math::DIRECTION_RIGHT;
+    if (arg == "u" || arg == "up")    return Math::DIRECTION_UP;
+    if (arg == "d" || arg == "down")  return Math::DIRECTION_DOWN;
+    return Math::DIRECTION_DEFAULT;
 }
 
-static bool isDescendantOf(SP<SDwindleNodeData> node, SP<SDwindleNodeData> ancestor) {
+static bool isDescendantOf(SP<Layout::Tiled::SDwindleNodeData> node, SP<Layout::Tiled::SDwindleNodeData> ancestor) {
     while (node) {
         if (node == ancestor)
             return true;
@@ -46,8 +72,8 @@ static SDispatchResult dwindleSwapDirection(std::string args) {
         dirStr = args;
     }
 
-    char dir = parseDirection(dirStr);
-    if (!dir)
+    auto dir = parseDirection(dirStr);
+    if (dir == Math::DIRECTION_DEFAULT)
         return {.success = false, .error = "Invalid direction: " + dirStr};
 
     PHLWINDOW inputWindow;
@@ -59,8 +85,12 @@ static SDispatchResult dwindleSwapDirection(std::string args) {
     if (!inputWindow)
         return {.success = false, .error = "No input window found"};
 
-    auto* dwindleLayout = dynamic_cast<CHyprDwindleLayout*>(g_pLayoutManager->getCurrentLayout());
-    if (!dwindleLayout) {
+    auto workspace = inputWindow->m_workspace;
+    if (!workspace || !workspace->m_space || !workspace->m_space->algorithm())
+        return {.success = false, .error = "No layout space for workspace"};
+
+    auto* dwindleAlgo = dynamic_cast<Layout::Tiled::CDwindleAlgorithm*>(workspace->m_space->algorithm()->tiledAlgo().get());
+    if (!dwindleAlgo) {
         notifyError(PHANDLE, "dwindleswap requires the Dwindle layout");
         return {};
     }
@@ -69,8 +99,8 @@ static SDispatchResult dwindleSwapDirection(std::string args) {
     if (!dirWindow)
         return {};
 
-    auto inputNode = dwindleLayout->getNodeFromWindow(inputWindow);
-    auto dirNode   = dwindleLayout->getNodeFromWindow(dirWindow);
+    auto inputNode = dwindleAlgo->getNodeFromWindow(inputWindow);
+    auto dirNode   = dwindleAlgo->getNodeFromWindow(dirWindow);
     if (!inputNode || !dirNode)
         return {};
 
@@ -78,7 +108,7 @@ static SDispatchResult dwindleSwapDirection(std::string args) {
     for (auto parent = inputNode->pParent.lock(); parent; parent = parent->pParent.lock()) {
         if (isDescendantOf(dirNode, parent)) {
             std::swap(parent->children[0], parent->children[1]);
-            parent->recalcSizePosRecursive();
+            workspace->m_space->recalculate();
             return {};
         }
     }
@@ -87,11 +117,11 @@ static SDispatchResult dwindleSwapDirection(std::string args) {
 }
 
 static SDispatchResult cycleFloating(std::string args) {
-    char dir = parseDirection(args);
-    if (!dir)
+    auto dir = parseDirection(args);
+    if (dir == Math::DIRECTION_DEFAULT)
         return {.success = false, .error = "Invalid direction: " + args};
 
-    bool increasing = (dir == 'r' || dir == 'd');
+    bool increasing = (dir == Math::DIRECTION_RIGHT || dir == Math::DIRECTION_DOWN);
 
     // Collect visible floating windows
     std::vector<PHLWINDOW> floating;
@@ -122,7 +152,7 @@ static SDispatchResult cycleFloating(std::string args) {
     }
 
     g_pInputManager->unconstrainMouse();
-    Desktop::focusState()->fullWindowFocus(target);
+    Desktop::focusState()->fullWindowFocus(target, Desktop::FOCUS_REASON_OTHER);
     target->warpCursor();
 
     return {};
@@ -156,7 +186,7 @@ static SDispatchResult toggleFloatingFocus(std::string) {
         return {};
 
     g_pInputManager->unconstrainMouse();
-    Desktop::focusState()->fullWindowFocus(target);
+    Desktop::focusState()->fullWindowFocus(target, Desktop::FOCUS_REASON_OTHER);
     target->warpCursor();
 
     return {};
