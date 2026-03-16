@@ -1,17 +1,23 @@
 #include <hyprland/src/plugins/PluginAPI.hpp>
-#include <hyprland/src/config/ConfigManager.hpp>
-#include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/desktop/DesktopTypes.hpp>
 #include <hyprland/src/helpers/math/Direction.hpp>
+#include <hyprland/src/event/EventBus.hpp>
+#include <hyprland/src/managers/EventManager.hpp>
 
 // Include the algorithm headers normally first so their transitive
 // standard library includes aren't affected by the private→public hack.
 #include <hyprland/src/layout/algorithm/TiledAlgorithm.hpp>
 
+// KeybindManager.hpp is transitively included by ConfigManager.hpp, so it
+// must appear inside the private→public block BEFORE ConfigManager.
 #define private public
+#include <hyprland/src/managers/KeybindManager.hpp>
 #include <hyprland/src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.hpp>
 #undef private
+
+#include <hyprland/src/config/ConfigManager.hpp>
+#include <hyprland/src/Compositor.hpp>
 
 #include <hyprland/src/layout/LayoutManager.hpp>
 #include <hyprland/src/layout/space/Space.hpp>
@@ -43,6 +49,62 @@ namespace Layout::Tiled {
 #include "Helpers.h"
 
 inline HANDLE PHANDLE = nullptr;
+
+// --- Submap fallthrough ---
+static CHyprSignalListener                keyListener;
+static std::unordered_set<std::string>    fallthroughSubmaps;
+static SP<SHyprCtlCommand>               getfallthroughCmd;
+
+static bool submapHasMatchingBind(const std::string& submap, uint32_t keycode, uint32_t mods) {
+    const uint32_t XKBKEYCODE = keycode + 8; // evdev → XKB offset
+
+    for (auto& kb : g_pKeybindManager->m_keybinds) {
+        if (kb->submap.name != submap)
+            continue;
+        if (kb->catchAll || kb->mouse || kb->release)
+            continue;
+        if (kb->modmask != mods && !kb->ignoreMods)
+            continue;
+
+        // Match by keycode if the keybind specifies one
+        if (kb->keycode != 0) {
+            if (kb->keycode == XKBKEYCODE)
+                return true;
+            continue;
+        }
+
+        // Match by key name → resolve to keysym and compare against event keysym
+        if (!kb->key.empty() && g_pKeybindManager->m_xkbTranslationState) {
+            const xkb_keysym_t eventKeysym = xkb_state_key_get_one_sym(g_pKeybindManager->m_xkbTranslationState, XKBKEYCODE);
+            if (eventKeysym == XKB_KEY_NoSymbol)
+                continue;
+            const auto KBKEY      = xkb_keysym_from_name(kb->key.c_str(), XKB_KEYSYM_NO_FLAGS);
+            const auto KBKEYLOWER = xkb_keysym_from_name(kb->key.c_str(), XKB_KEYSYM_CASE_INSENSITIVE);
+            if (eventKeysym == KBKEY || eventKeysym == KBKEYLOWER)
+                return true;
+        }
+    }
+    return false;
+}
+
+static void onKeyEvent(IKeyboard::SKeyEvent event, Event::SCallbackInfo&) {
+    if (event.state != WL_KEYBOARD_KEY_STATE_PRESSED)
+        return;
+
+    auto& current = CKeybindManager::m_currentSelectedSubmap;
+    if (current.name.empty())
+        return;
+    if (!fallthroughSubmaps.contains(current.name))
+        return;
+
+    const uint32_t mods = g_pInputManager->getModsFromAllKBs();
+
+    if (!submapHasMatchingBind(current.name, event.keycode, mods)) {
+        current = SSubmap{}; // Fall through to main map
+        g_pEventManager->postEvent(SHyprIPCEvent{"submap", ""});
+        Event::bus()->m_events.keybinds.submap.emit(std::string{""});
+    }
+}
 
 static Math::eDirection parseDirection(const std::string& arg) {
     if (arg == "l" || arg == "left")  return Math::DIRECTION_LEFT;
@@ -228,6 +290,45 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle)
         return toggleFloatingFocus(args);
     });
 
+    // --- Submap fallthrough dispatchers ---
+    HyprlandAPI::addDispatcherV2(PHANDLE, "taliamisc:setfallthrough", [](std::string args) {
+        auto spacePos = args.rfind(' ');
+        if (spacePos == std::string::npos)
+            return SDispatchResult{.success = false, .error = "Expected: <submap> <true|false>"};
+        auto name = args.substr(0, spacePos);
+        auto val  = args.substr(spacePos + 1);
+        if (val == "true" || val == "1")
+            fallthroughSubmaps.insert(name);
+        else
+            fallthroughSubmaps.erase(name);
+        return SDispatchResult{};
+    });
+
+    HyprlandAPI::addDispatcherV2(PHANDLE, "taliamisc:togglefallthrough", [](std::string args) {
+        if (fallthroughSubmaps.contains(args))
+            fallthroughSubmaps.erase(args);
+        else
+            fallthroughSubmaps.insert(args);
+        return SDispatchResult{};
+    });
+
+    getfallthroughCmd = HyprlandAPI::registerHyprCtlCommand(PHANDLE, SHyprCtlCommand{
+        .name = "taliamisc:getfallthrough",
+        .exact = true,
+        .fn = [](eHyprCtlOutputFormat format, std::string args) -> std::string {
+            // Trim leading/trailing whitespace
+            while (!args.empty() && args.front() == ' ') args.erase(args.begin());
+            while (!args.empty() && args.back() == ' ') args.pop_back();
+            bool enabled = fallthroughSubmaps.contains(args);
+            if (format == eHyprCtlOutputFormat::FORMAT_JSON)
+                return std::format(R"({{"submap":"{}","fallthrough":{}}})", args, enabled ? "true" : "false");
+            return enabled ? "true" : "false";
+        }
+    });
+
+    // Register keyboard event hook for submap fallthrough
+    keyListener = Event::bus()->m_events.input.keyboard.key.listen(onKeyEvent);
+
     return {
         "HyprTaliaMisc",
         "Miscellaneous Hyprland utilities",
@@ -238,6 +339,9 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle)
 
 APICALL EXPORT void PLUGIN_EXIT()
 {
+    keyListener.reset();
+    getfallthroughCmd.reset();
+    fallthroughSubmaps.clear();
     Log::logger->log(Log::INFO, "[HyprTaliaMisc] Unloading Plugin");
 }
 
