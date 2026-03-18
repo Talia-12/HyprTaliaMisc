@@ -87,6 +87,16 @@ static bool submapHasMatchingBind(const std::string& submap, uint32_t keycode, u
     return false;
 }
 
+// Mirrors the internal xkb_keysym_is_modifier() which is not part of
+// libxkbcommon's public API.  Keeps modifier-only key presses from
+// triggering submap fallthrough.
+static bool isModifierKeysym(xkb_keysym_t sym) {
+    return (sym >= XKB_KEY_Shift_L    && sym <= XKB_KEY_Hyper_R)          ||
+           (sym >= XKB_KEY_ISO_Lock   && sym <= XKB_KEY_ISO_Level5_Lock)  ||
+           sym == XKB_KEY_Mode_switch                                     ||
+           sym == XKB_KEY_Num_Lock;
+}
+
 static void onKeyEvent(IKeyboard::SKeyEvent event, Event::SCallbackInfo&) {
     if (event.state != WL_KEYBOARD_KEY_STATE_PRESSED)
         return;
@@ -96,6 +106,14 @@ static void onKeyEvent(IKeyboard::SKeyEvent event, Event::SCallbackInfo&) {
         return;
     if (!fallthroughSubmaps.contains(current.name))
         return;
+
+    // Ignore bare modifier presses — they shouldn't trigger fallthrough
+    if (g_pKeybindManager->m_xkbTranslationState) {
+        const xkb_keysym_t sym = xkb_state_key_get_one_sym(
+            g_pKeybindManager->m_xkbTranslationState, event.keycode + 8);
+        if (isModifierKeysym(sym))
+            return;
+    }
 
     const uint32_t mods = g_pInputManager->getModsFromAllKBs();
 
