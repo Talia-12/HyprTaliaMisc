@@ -4,16 +4,17 @@
 #include <hyprland/src/helpers/math/Direction.hpp>
 #include <hyprland/src/event/EventBus.hpp>
 #include <hyprland/src/managers/EventManager.hpp>
+#include <hyprland/src/config/shared/actions/ConfigActions.hpp>
 
 // Include the algorithm headers normally first so their transitive
 // standard library includes aren't affected by the private→public hack.
 #include <hyprland/src/layout/algorithm/TiledAlgorithm.hpp>
+#include <hyprland/src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.hpp>
 
 // KeybindManager.hpp is transitively included by ConfigManager.hpp, so it
 // must appear inside the private→public block BEFORE ConfigManager.
 #define private public
 #include <hyprland/src/managers/KeybindManager.hpp>
-#include <hyprland/src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.hpp>
 #undef private
 
 #include <hyprland/src/config/ConfigManager.hpp>
@@ -22,29 +23,6 @@
 #include <hyprland/src/layout/LayoutManager.hpp>
 #include <hyprland/src/layout/space/Space.hpp>
 #include <hyprland/src/layout/algorithm/Algorithm.hpp>
-
-// SDwindleNodeData is defined only in DwindleAlgorithm.cpp, so we must
-// duplicate the struct definition here to access the tree structure.
-// This is inherently fragile — update when Hyprland changes.
-namespace Layout::Tiled {
-    struct SDwindleNodeData {
-        WP<SDwindleNodeData>                pParent;
-        bool                                isNode = false;
-        WP<Layout::ITarget>                 pTarget;
-        std::array<WP<SDwindleNodeData>, 2> children = {};
-        WP<SDwindleNodeData>                self;
-        bool                                splitTop               = false;
-        CBox                                box                    = {0};
-        float                               splitRatio             = 1.f;
-        bool                                valid                  = true;
-        bool                                ignoreFullscreenChecks = false;
-
-        bool operator==(const SDwindleNodeData& rhs) const {
-            return pTarget.lock() == rhs.pTarget.lock() && box == rhs.box && pParent == rhs.pParent && children[0] == rhs.children[0] && children[1] == rhs.children[1];
-        }
-
-    };
-}
 
 #include "Helpers.h"
 
@@ -101,10 +79,10 @@ static void onKeyEvent(IKeyboard::SKeyEvent event, Event::SCallbackInfo&) {
     if (event.state != WL_KEYBOARD_KEY_STATE_PRESSED)
         return;
 
-    auto& current = CKeybindManager::m_currentSelectedSubmap;
-    if (current.name.empty())
+    auto& current = Config::Actions::state()->m_currentSubmap;
+    if (current.empty())
         return;
-    if (!fallthroughSubmaps.contains(current.name))
+    if (!fallthroughSubmaps.contains(current))
         return;
 
     // Ignore bare modifier presses — they shouldn't trigger fallthrough
@@ -117,8 +95,8 @@ static void onKeyEvent(IKeyboard::SKeyEvent event, Event::SCallbackInfo&) {
 
     const uint32_t mods = g_pInputManager->getModsFromAllKBs();
 
-    if (!submapHasMatchingBind(current.name, event.keycode, mods)) {
-        current = SSubmap{}; // Fall through to main map
+    if (!submapHasMatchingBind(current, event.keycode, mods)) {
+        current.clear(); // Fall through to main map
         g_pEventManager->postEvent(SHyprIPCEvent{"submap", ""});
         Event::bus()->m_events.keybinds.submap.emit(std::string{""});
     }
