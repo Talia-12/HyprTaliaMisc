@@ -1,5 +1,7 @@
 #include <hyprland/src/plugins/PluginAPI.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
+#include <hyprland/src/desktop/state/WindowState.hpp>
+#include <hyprland/src/desktop/state/ViewState.hpp>
 #include <hyprland/src/desktop/DesktopTypes.hpp>
 #include <hyprland/src/helpers/math/Direction.hpp>
 #include <hyprland/src/event/EventBus.hpp>
@@ -138,7 +140,7 @@ static SDispatchResult dwindleSwapDirection(std::string args) {
     if (windowArg.empty())
         inputWindow = Desktop::focusState()->window();
     else
-        inputWindow = g_pCompositor->getWindowByRegex(windowArg);
+        inputWindow = Desktop::viewState()->query().selector(windowArg).runWindow();
 
     if (!inputWindow)
         return {.success = false, .error = "No input window found"};
@@ -153,7 +155,7 @@ static SDispatchResult dwindleSwapDirection(std::string args) {
         return {};
     }
 
-    PHLWINDOW dirWindow = g_pCompositor->getWindowInDirection(inputWindow, dir);
+    PHLWINDOW dirWindow = Desktop::windowState()->query().inDirection(inputWindow, dir);
     if (!dirWindow)
         return {};
 
@@ -183,7 +185,7 @@ static SDispatchResult cycleFloating(std::string args) {
 
     // Collect visible floating windows
     std::vector<PHLWINDOW> floating;
-    for (const auto& w : g_pCompositor->m_windows) {
+    for (const auto& w : Desktop::windowState()->windows()) {
         if (w->m_isFloating && w->m_isMapped && !w->isHidden() &&
             w->m_workspace && w->m_workspace->isVisible())
             floating.push_back(w);
@@ -226,11 +228,11 @@ static SDispatchResult toggleFloatingFocus(std::string) {
     if (active->m_isFloating) {
         // Focus the tiled window beneath the centre of this floating window
         auto center = active->getWindowMainSurfaceBox().middle();
-        target = g_pCompositor->vectorToWindowUnified(center, Desktop::View::WINDOW_ONLY, active);
+        target = Desktop::viewState()->hitTest().windowAt(center, Desktop::View::WINDOW_ONLY, active);
     } else {
         // Focus the first visible floating window that overlaps this tiled window
         auto activeBox = active->getWindowMainSurfaceBox();
-        for (const auto& w : g_pCompositor->m_windows) {
+        for (const auto& w : Desktop::windowState()->windows()) {
             if (w->m_isFloating && w->m_isMapped && !w->isHidden() &&
                 w->m_workspace && w->m_workspace->isVisible() &&
                 w->getWindowMainSurfaceBox().overlaps(activeBox)) {

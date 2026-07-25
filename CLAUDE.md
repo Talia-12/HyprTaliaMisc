@@ -4,7 +4,7 @@ Hyprland plugin providing miscellaneous dispatchers (dwindleswap, cyclefloating,
 
 ## Reference
 
-- Hyprland source (v0.54.2) is cloned at `~/Programming/hyprland/Hyprland` — read from there instead of the nix store.
+- Hyprland headers for the pinned version: `nix eval --raw .#HyprTaliaMisc.buildInputs --apply 'x: (builtins.head x).outPath'`, then read `include/hyprland/src/`.
 - User's Hyprland keybinding config: `~/.dotfiles/home/tyrab/features/desktop/hyprland/bindings.nix`
 
 ## Commands
